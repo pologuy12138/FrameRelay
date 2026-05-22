@@ -74,6 +74,11 @@ async function startMedia(){
     ]);
   }catch(e){err('摄像头/麦克风不可用');return false}
   LV.srcObject = lstream;
+  // Create AudioContext within getUserMedia's user gesture
+  if(!aCtx && typeof AudioContext!=='undefined'){
+    aCtx=new AudioContext();
+    if(aCtx.state==='suspended') aCtx.resume();
+  }
   bar('waiting','已就绪');ss();return true;
 }
 
@@ -97,8 +102,9 @@ function stopCap(){if(capInterval){clearInterval(capInterval);capInterval=null}}
 
 // ---- Audio: PCM via Web Audio API ----
 let aTx=0,aRx=0;
-let aSnd=null,aProc=null,aStop=false; // sender ctx & processor
-let aRcv=null,aNextT=0;               // receiver ctx & scheduler
+let aProc=null,aStop=false;
+let aNextT=0;
+let aCtx=null; // created inside startMedia() within getUserMedia gesture
 
 // Sender: capture microphone → Int16 PCM → WS
 function startAudio(){
@@ -106,12 +112,12 @@ function startAudio(){
   if(!lstream||!lstream.getAudioTracks||!lstream.getAudioTracks().length){
     setTimeout(startAudio,500);return;
   }
+  if(!aCtx || aCtx.state==='closed') return;
+  // Ensure context is running
+  if(aCtx.state==='suspended') aCtx.resume();
   try{
-    aSnd=new AudioContext(); aRcv=new AudioContext(); // both in user gesture
-    if(aSnd.state==='suspended') aSnd.resume();
-    if(aRcv.state==='suspended') aRcv.resume();
-    const src=aSnd.createMediaStreamSource(lstream);
-    aProc=aSnd.createScriptProcessor(2048,1,1);
+    const src=aCtx.createMediaStreamSource(lstream);
+    aProc=aCtx.createScriptProcessor(2048,1,1);
     aProc.onaudioprocess=e=>{
       if(aStop||!ws||ws.readyState!==WebSocket.OPEN)return;
       const input=e.inputBuffer.getChannelData(0);
@@ -122,9 +128,9 @@ function startAudio(){
       ws.send(c);tu(c.length);
       aTx++;
     };
-    const mute=aSnd.createGain();
+    const mute=aCtx.createGain();
     mute.gain.value=0;
-    src.connect(aProc); aProc.connect(mute); mute.connect(aSnd.destination);
+    src.connect(aProc); aProc.connect(mute); mute.connect(aCtx.destination);
     log('audio send @'+aSnd.sampleRate+'Hz');
   }catch(e){err('音频启动失败: '+e.message)}
 }
@@ -132,26 +138,24 @@ function startAudio(){
 function stopAudio(){
   aStop=true;
   if(aProc){aProc.disconnect();aProc=null}
-  if(aSnd){aSnd.close();aSnd=null}
-  if(aRcv){aRcv.close();aRcv=null}
   aNextT=0;
 }
 
 // Receiver: Int16 PCM → AudioContext playback
 function handleAudio(data){
   aRx++;
+  if(!aCtx||aCtx.state==='closed') return;
+  if(aCtx.state==='suspended') aCtx.resume();
   try{
-    if(!aRcv){ aRcv=new AudioContext(); aNextT=0; if(aRcv.state==='suspended') aRcv.resume(); }
-    if(aRcv.state==='closed') return;
     const pcm=new Int16Array(data);
-    const sr=aRcv.sampleRate;
-    const buf=aRcv.createBuffer(1,pcm.length,sr);
+    const sr=aCtx.sampleRate;
+    const buf=aCtx.createBuffer(1,pcm.length,sr);
     const ch=buf.getChannelData(0);
     for(let i=0;i<pcm.length;i++) ch[i]=pcm[i]/32768;
-    const node=aRcv.createBufferSource();
+    const node=aCtx.createBufferSource();
     node.buffer=buf;
-    node.connect(aRcv.destination);
-    if(aNextT<aRcv.currentTime+0.05) aNextT=aRcv.currentTime+0.05;
+    node.connect(aCtx.destination);
+    if(aNextT<aCtx.currentTime+0.05) aNextT=aCtx.currentTime+0.05;
     node.start(aNextT);
     aNextT+=pcm.length/sr;
   }catch(e){log('aErr:'+e.message)}
