@@ -60,7 +60,7 @@ let bar=(t,txt)=>{$('bar').className=t;$('bar').textContent=txt};
 let err=m=>{$('err').style.display='block';$('err').textContent='❌ '+m};
 
 let ws, lstream, havePeer=false, capInterval=null;
-let pc=null, makingOffer=false, ignoreOffer=false;
+let pc=null, makingOffer=false, ignoreOffer=false, pendingCandidates=[];
 let remoteId=null, aConnected=false;
 let upB=0, downB=0, lastUp=0, lastDown=0, si=null;
 function tu(n){upB+=n} function td(n){downB+=n}
@@ -73,8 +73,8 @@ const ICE_CONFIG = {
     urls: ['turn:gcjp.372100.xyz:3478?transport=tcp'],
     username: 'videochat',
     credential: 'videochat123'
-  }]
-  // removed iceTransportPolicy:'relay' — let browser use TURN as only server, fall back naturally
+  }],
+  iceTransportPolicy: 'relay'
 };
 
 // ---- Media ----
@@ -111,6 +111,7 @@ function stopCap(){if(capInterval){clearInterval(capInterval);capInterval=null}}
 function closePC(){
   if(pc){try{pc.close()}catch(e){}pc=null}
   makingOffer=false;ignoreOffer=false;aConnected=false;
+  pendingCandidates=[];
   $('aDbg').textContent='';
 }
 
@@ -125,6 +126,8 @@ function createPC(){
   pc.ontrack = e => {
     log('audio track received');
     RA.srcObject = e.streams[0];
+    RA.style.display='block';
+    RA.play().catch(ex=>log('remote audio play blocked: '+ex.message));
     aConnected = true;
     updateDebug();
   };
@@ -162,7 +165,8 @@ async function createAndOffer(){
     log('offer sent to '+remoteId);
     bar('busy','audio:offer sent');
     updateDebug();
-  }catch(e){err('WebRTC offer失败: '+e.message);makingOffer=false;closePC()}
+  }catch(e){err('WebRTC offer失败: '+e.message);closePC()}
+  finally{makingOffer=false}
 }
 
 async function handleOffer(from, sdp){
@@ -175,6 +179,7 @@ async function handleOffer(from, sdp){
       if(ignoreOffer){log('ignoring offer (collision)');return}
     }
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    await flushPendingCandidates();
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     ws.send(JSON.stringify({to:from, type:'wr-answer', data:pc.localDescription}));
@@ -188,14 +193,30 @@ async function handleAnswer(sdp){
   if(!pc) return;
   try{
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    await flushPendingCandidates();
     log('remote desc set');
   }catch(e){log('handleAnswer err:'+e.message)}
 }
 
 async function handleCandidate(c){
-  if(!pc) return;
-  try{await pc.addIceCandidate(new RTCIceCandidate(c))}
+  const candidate = new RTCIceCandidate(c);
+  if(!pc || !pc.remoteDescription){
+    pendingCandidates.push(candidate);
+    log('ICE queued');
+    return;
+  }
+  try{await pc.addIceCandidate(candidate)}
   catch(e){log('ICE err:'+e.message)}
+}
+
+async function flushPendingCandidates(){
+  if(!pc || !pc.remoteDescription || !pendingCandidates.length) return;
+  const queue = pendingCandidates.splice(0);
+  for(const c of queue){
+    try{await pc.addIceCandidate(c)}
+    catch(e){log('queued ICE err:'+e.message)}
+  }
+  log('ICE flushed: '+queue.length);
 }
 
 // Simple polite peer: compare IDs to break ties
