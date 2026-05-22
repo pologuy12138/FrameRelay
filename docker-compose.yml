@@ -14,7 +14,7 @@ version: "3.9"
 services:
   app:
     build: .
-    container_name: videochat-app
+    container_name: framerelay-app
     restart: unless-stopped
     expose:
       - "3050"
@@ -23,7 +23,7 @@ services:
 
   nginx:
     image: nginx:alpine
-    container_name: videochat-nginx
+    container_name: framerelay-nginx
     restart: unless-stopped
     ports:
       - "80:80"
@@ -39,7 +39,7 @@ services:
 
   certbot:
     image: certbot/certbot
-    container_name: videochat-certbot
+    container_name: framerelay-certbot
     volumes:
       - ./certbot/www:/var/www/certbot
       - ./certbot/conf:/etc/letsencrypt

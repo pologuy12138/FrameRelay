@@ -17,7 +17,7 @@ version: "3.9"
 services:
   app:
     build: .
-    container_name: videochat-app
+    container_name: framerelay-app
     restart: unless-stopped
     ports:
       - "3050:3050"             # HTTP（内网用，或自行套 HTTPS 反代）

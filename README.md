@@ -1,6 +1,6 @@
-# P2P 视频聊天
+# FrameRelay (VideoTalk)
 
-轻量级、自托管的 P2P 视频聊天服务。通过 Canvas 截图 + WebSocket 中继实现跨平台视频通话。
+轻量级、自托管的视频通话服务。通过 Canvas 截图 + WebSocket 中继实现跨平台视频通话。
 
 > 如果你也在寻找一个无需注册、打开即用的自建视频聊天方案，这个项目应该很适合你。
 
@@ -35,8 +35,8 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/你的用户名/p2p-videochat.git
-cd p2p-videochat
+git clone https://github.com/你的用户名/FrameRelay.git
+cd FrameRelay
 
 # 2. 修改配置
 #    将 nginx.conf 中的 DOMAIN 全部替换为你的域名
@@ -121,7 +121,7 @@ const FPS = 10;          // 帧率（帧/秒），调低可减少带宽
 ## 项目结构
 
 ```
-p2p-videochat/
+FrameRelay/
 ├── server.js                 # 信令 + 中继服务（Node.js）
 ├── package.json
 ├── Dockerfile                # Docker 镜像构建
@@ -201,7 +201,7 @@ ls -la Dockerfile
 docker compose -f docker-compose.app-only.yml up -d
 ```
 
-如果是从 GitHub 下载 ZIP，解压后先 `cd p2p-videochat` 进入子目录。
+如果是从 GitHub 下载 ZIP，解压后先 `cd FrameRelay` 进入子目录。
 
 ### 6. 如何查看运行日志
 
