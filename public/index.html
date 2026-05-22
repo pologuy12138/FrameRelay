@@ -94,10 +94,10 @@ function startCap(){
 }
 function stopCap(){if(capInterval){clearInterval(capInterval);capInterval=null}}
 
-// ---- Audio: PCM via Web Audio API (universal, no codec issues) ----
+// ---- Audio: PCM via Web Audio API ----
 let aTx=0,aRx=0;
-let aCtx=null, aProc=null, aStop=false;
-let aNextT=0; // playback scheduling
+let aSnd=null,aProc=null,aStop=false; // sender ctx & processor
+let aRcv=null,aNextT=0;               // receiver ctx & scheduler
 
 // Sender: capture microphone → Int16 PCM → WS
 function startAudio(){
@@ -106,10 +106,10 @@ function startAudio(){
     setTimeout(startAudio,500);return;
   }
   try{
-    aCtx=new AudioContext();
-    if(aCtx.state==='suspended') aCtx.resume();
-    const src=aCtx.createMediaStreamSource(lstream);
-    aProc=aCtx.createScriptProcessor(2048,1,1); // 2048 samples mono
+    aSnd=new AudioContext();
+    if(aSnd.state==='suspended') aSnd.resume();
+    const src=aSnd.createMediaStreamSource(lstream);
+    aProc=aSnd.createScriptProcessor(2048,1,1);
     aProc.onaudioprocess=e=>{
       if(aStop||!ws||ws.readyState!==WebSocket.OPEN)return;
       const input=e.inputBuffer.getChannelData(0);
@@ -120,21 +120,42 @@ function startAudio(){
       ws.send(c.buffer);tu(c.byteLength);
       aTx++;
     };
-    // Connect through mute gain to keep audio graph alive (required for callback)
-    const mute=aCtx.createGain();
-    mute.gain.value=0; // muted, no feedback
-    src.connect(aProc);
-    aProc.connect(mute);
-    mute.connect(aCtx.destination);
-    log('audio PCM started @'+aCtx.sampleRate+'Hz');
+    const mute=aSnd.createGain();
+    mute.gain.value=0;
+    src.connect(aProc); aProc.connect(mute); mute.connect(aSnd.destination);
+    log('audio send @'+aSnd.sampleRate+'Hz');
   }catch(e){err('音频启动失败: '+e.message)}
 }
 
 function stopAudio(){
   aStop=true;
   if(aProc){aProc.disconnect();aProc=null}
-  if(aCtx){aCtx.close();aCtx=null}
+  if(aSnd){aSnd.close();aSnd=null}
+  if(aRcv){aRcv.close();aRcv=null}
   aNextT=0;
+}
+
+// Receiver: Int16 PCM → AudioContext playback
+function handleAudio(data){
+  aRx++;
+  try{
+    if(!aRcv||aRcv.state==='closed'){
+      aRcv=new AudioContext();
+      aNextT=0;
+      if(aRcv.state==='suspended') aRcv.resume();
+    }
+    const pcm=new Int16Array(data);
+    const sr=aRcv.sampleRate;
+    const buf=aRcv.createBuffer(1,pcm.length,sr);
+    const ch=buf.getChannelData(0);
+    for(let i=0;i<pcm.length;i++) ch[i]=pcm[i]/32768;
+    const node=aRcv.createBufferSource();
+    node.buffer=buf;
+    node.connect(aRcv.destination);
+    if(aNextT<aRcv.currentTime+0.05) aNextT=aRcv.currentTime+0.05;
+    node.start(aNextT);
+    aNextT+=pcm.length/sr;
+  }catch(e){log('aErr:'+e.message)}
 }
 
 // Receiver: Int16 PCM → AudioContext playback
