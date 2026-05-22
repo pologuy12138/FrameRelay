@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>FrameRelay - 视频通话</title>
+<title>FrameRelay</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1a1a2e;color:#fff;height:100vh}
@@ -28,6 +28,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .controls button:hover{background:#0f3460}
 .controls button.off,.controls button.hangup:hover{background:#e94560}
 .controls button.hangup{background:#e94560;width:56px;height:56px}
+#remoteAudio{display:none}
 @media(max-width:600px){.grid{grid-template-columns:1fr;grid-template-rows:1fr 1fr}}
 </style>
 </head>
@@ -46,6 +47,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </div>
 <div class="box">
 <img id="remoteImg" style="display:none">
+<video id="remoteVideo" autoplay playsinline style="display:none"></video>
 <div class="ph" id="ph">等待对方加入...</div>
 <div class="lbl">对方</div>
 </div>
@@ -55,55 +57,49 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <button id="btnCam">📹</button>
 <button class="hangup" id="btnHangup">📞</button>
 </div>
+<audio id="remoteAudio" autoplay></audio>
 </div>
 
 <canvas id="capCanvas" style="display:none"></canvas>
 
 <script>
-// ---- DOM ----
 const $=id=>document.getElementById(id);
-const LV=$('localVideo'), RI=$('remoteImg'), PH=$('ph'), CV=$('capCanvas');
+const LV=$('localVideo'), RI=$('remoteImg'), RV=$('remoteVideo'), PH=$('ph'), CV=$('capCanvas'), RA=$('remoteAudio');
 const FPS=10;
-let log=m=>console.log('VC:',m);
+let log=m=>console.log('FR:',m);
 let bar=(t,txt)=>{$('bar').className=t;$('bar').textContent=txt};
 let err=m=>{$('err').style.display='block';$('err').textContent='❌ '+m};
 
 // ---- State ----
 let ws, lstream, havePeer=false;
-let capInterval=null;
+let capInterval=null, aRec=null, aMs=null, aSb=null, aQ=[];
 
 // ---- Network stats ----
 let upBytes=0, downBytes=0, lastUp=0, lastDown=0;
 let statsInterval=null;
-
 function trackUp(n){upBytes+=n}
 function trackDown(n){downBytes+=n}
-
 function startStats(){
   stopStats();
-  statsInterval = setInterval(()=>{
-    const up = upBytes - lastUp;
-    const dn = downBytes - lastDown;
-    lastUp = upBytes; lastDown = downBytes;
-    const upK = (up / 1024).toFixed(1);
-    const dnK = (dn / 1024).toFixed(1);
-    $('netStats').textContent = `⬆ ${upK} ⬇ ${dnK} KB/s`;
+  statsInterval=setInterval(()=>{
+    const up=(upBytes-lastUp)/1024, dn=(downBytes-lastDown)/1024;
+    lastUp=upBytes; lastDown=downBytes;
+    $('netStats').textContent=`⬆ ${up.toFixed(1)} ⬇ ${dn.toFixed(1)} KB/s`;
   },1000);
 }
-function stopStats(){
-  if(statsInterval){clearInterval(statsInterval);statsInterval=null}
-}
+function stopStats(){if(statsInterval){clearInterval(statsInterval);statsInterval=null}}
 
 // ---- Media ----
 async function startMedia(){
   log('getMedia');
   try{
     lstream = await Promise.race([
-      navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480}},audio:false}),
+      navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480}},audio:true}),
       new Promise((_,r)=>setTimeout(()=>r('timeout'),7000))
     ]);
   }catch(e){
-    err('摄像头不可用，请检查权限');
+    bar('err','摄像头/麦克风不可用，请检查权限');
+    err('设备访问被拒绝');
     return false;
   }
   LV.srcObject = lstream;
@@ -113,8 +109,24 @@ async function startMedia(){
   return true;
 }
 
-// ---- Sending: canvas capture ----
-function startCap(){
+// ---- Sending: video via canvas, audio via MediaRecorder ----
+
+// Helper: prepend type byte (1=audio, 2=video) and send
+function sendBinary(typeByte, blob){
+  if(!ws||ws.readyState!==WebSocket.OPEN) return;
+  blob.arrayBuffer().then(buf=>{
+    const prefix = new Uint8Array(1);
+    prefix[0] = typeByte;
+    const combined = new Uint8Array(1 + buf.byteLength);
+    combined.set(prefix);
+    combined.set(new Uint8Array(buf), 1);
+    ws.send(combined.buffer);
+    trackUp(combined.byteLength);
+  }).catch(e=>log('send err:'+e.message));
+}
+
+function startSend(){
+  // --- Video: canvas capture ---
   stopCap();
   const v = LV;
   const tryStart = ()=>{
@@ -125,29 +137,83 @@ function startCap(){
     CV.height = Math.round(v.videoHeight * scale);
     const ctx = CV.getContext('2d');
     capInterval = setInterval(()=>{
-      if(!ws||ws.readyState!==WebSocket.OPEN) return;
       try{
         ctx.drawImage(v,0,0,CV.width,CV.height);
         CV.toBlob(blob=>{
-          if(blob&&blob.size>100&&ws&&ws.readyState===WebSocket.OPEN){
-            ws.send(blob);
-            trackUp(blob.size);
-          }
+          if(blob&&blob.size>100) sendBinary(2, blob);
         },'image/jpeg',0.4);
       }catch(e){log('cap err:'+e.message)}
     },1000/FPS);
-    log('cap started '+FPS+'fps @ '+CV.width+'x'+CV.height);
+    log('video '+FPS+'fps '+CV.width+'x'+CV.height);
   };
   tryStart();
+
+  // --- Audio: MediaRecorder ---
+  if(aRec){aRec.stop();aRec=null}
+  try{
+    const aCodec = 'audio/webm;codecs=opus';
+    if(typeof MediaRecorder!=='undefined' && MediaRecorder.isTypeSupported(aCodec)){
+      aRec = new MediaRecorder(lstream, {mimeType:aCodec});
+      aRec.ondataavailable = e => { if(e.data&&e.data.size>0) sendBinary(1, e.data); };
+      aRec.start(100);
+      log('audio '+aCodec);
+    } else {
+      log('audio codec not supported, trying fallback');
+      aRec = new MediaRecorder(lstream, {mimeType:'audio/webm'});
+      aRec.ondataavailable = e => { if(e.data&&e.data.size>0) sendBinary(1, e.data); };
+      aRec.start(100);
+      log('audio fallback');
+    }
+  } catch(e) {
+    log('audio init fail: '+e.message);
+  }
+}
+
+function stopSend(){
+  stopCap();
+  if(aRec){aRec.stop();aRec=null}
 }
 
 function stopCap(){
   if(capInterval){clearInterval(capInterval);capInterval=null}
 }
 
-// ---- Receiving: JPEG display ----
+// ---- Receiving ----
+function feedAudio(data){
+  if(!aSb){
+    // Init audio MediaSource on first chunk
+    try{
+      aMs = new MediaSource();
+      RA.src = URL.createObjectURL(aMs);
+      aMs.onsourceopen = ()=>{
+        try{
+          aSb = aMs.addSourceBuffer('audio/webm;codecs=opus');
+          aSb.mode = 'segments';
+          aSb.onupdateend = ()=>{
+            while(aQ.length && aSb && !aSb.updating){
+              try{aSb.appendBuffer(aQ.shift())}catch(e){}
+            }
+            // Trim to 30s
+            if(aSb && !aSb.updating && aSb.buffered.length){
+              try{const e=aSb.buffered.end(aSb.buffered.length-1);if(e>30)aSb.remove(0,e-30)}catch(e2){}
+            }
+          };
+          // Process queued
+          while(aQ.length && aSb && !aSb.updating){
+            try{aSb.appendBuffer(aQ.shift())}catch(e){}
+          }
+        }catch(e){log('audio sb:'+e.message)}
+      };
+    }catch(e){log('audio ms:'+e.message)}
+  }
+  if(aSb && !aSb.updating){
+    try{aSb.appendBuffer(data)}catch(e){aQ.push(data)}
+  } else {
+    aQ.push(data);
+  }
+}
+
 function showFrame(data){
-  trackDown(data.byteLength);
   if(!havePeer) return;
   if(PH.style.display!=='none'){PH.style.display='none';RI.style.display='block';bar('ok','接收中')}
   const blob = new Blob([data],{type:'image/jpeg'});
@@ -165,11 +231,17 @@ function connect(){
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = ()=>{ log('WS OK'); bar('busy','获取设备...'); startMedia(); };
-  ws.onclose = ()=>{ log('closed'); stopCap(); stopStats(); bar('err','断开'); setTimeout(connect,3000); };
+  ws.onclose = ()=>{ log('closed'); stopSend(); stopStats(); bar('err','断开'); setTimeout(connect,3000); };
 
   ws.onmessage = e=>{
     if(e.data instanceof ArrayBuffer){
-      showFrame(e.data);
+      const buf = new Uint8Array(e.data);
+      if(buf.length<2) return;
+      const type = buf[0];
+      const payload = e.data.slice(1);
+      trackDown(e.data.byteLength);
+      if(type===1) feedAudio(payload);   // audio
+      else if(type===2) showFrame(payload); // video
       return;
     }
     try{
@@ -177,22 +249,19 @@ function connect(){
       switch(m.type){
         case 'init':
           havePeer = m.peers.length>0;
-          if(havePeer){ bar('ok','对方已在线'); startCap(); }
+          if(havePeer){ bar('ok','对方已在线'); startSend(); }
           else bar('waiting','等待对方加入...');
           break;
         case 'peer-joined':
-          if(!havePeer){ havePeer=true; bar('ok','对方已加入'); startCap(); }
+          if(!havePeer){ havePeer=true; bar('ok','对方已加入'); startSend(); }
           break;
         case 'peer-left':
-          havePeer=false; stopCap();
-          RI.style.display='none'; PH.style.display='block'; PH.textContent='等待对方加入...';
+          cleanupRemote();
           bar('waiting','等待对方加入...');
-          $('netStats').textContent='⬆ -- ⬇ -- KB/s';
           break;
         case 'hangup':
-          havePeer=false; stopCap();
-          RI.style.display='none'; PH.style.display='block'; PH.textContent='对方已挂断';
-          bar('waiting','等待对方加入...');
+          cleanupRemote();
+          bar('waiting','已挂断');
           break;
         case 'room-full':
           err('聊天室已满（最多2人），请稍后再试');
@@ -201,12 +270,22 @@ function connect(){
       }
     }catch(e){err('消息错误:'+e.message)}
   };
+
+  function cleanupRemote(){
+    havePeer=false; stopSend();
+    RI.style.display='none'; PH.style.display='block'; PH.textContent='等待对方加入...';
+    if(aMs){try{aMs.endOfStream()}catch(e){}aMs=null}
+    RA.src=''; aSb=null; aQ=[];
+    $('netStats').textContent='⬆ -- ⬇ -- KB/s';
+  }
 }
 
 // ---- Controls ----
 let mOn=true,cOn=true;
 $('btnMic').onclick=function(){
-  mOn=!mOn;this.className=mOn?'':'off';this.textContent=mOn?'🎤':'🔇';
+  mOn=!mOn;
+  if(lstream)lstream.getAudioTracks().forEach(t=>t.enabled=mOn);
+  this.className=mOn?'':'off';this.textContent=mOn?'🎤':'🔇';
 };
 $('btnCam').onclick=function(){
   cOn=!cOn;
@@ -215,7 +294,7 @@ $('btnCam').onclick=function(){
 };
 $('btnHangup').onclick=function(){
   if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'hangup'}));
-  stopCap();
+  stopSend();
   RI.style.display='none';PH.style.display='block';PH.textContent='已挂断';
   bar('waiting','已挂断');
 };
