@@ -136,6 +136,87 @@ p2p-videochat/
 
 ---
 
+## 故障排查
+
+### 1. 页面反复显示"连接服务器"→"断开"
+
+**现象**：页面能加载，状态在"连接服务器"和"断开"之间反复切换。
+
+**原因**：WebSocket 握手被反向代理切断。
+
+**群晖 NAS 反代修复方法**：
+
+在 **控制面板 → 登录门户 → 高级 → 反向代理** 中编辑你的规则，在"自定义标题"中添加：
+
+| 标头名称 | 标头值 |
+|---------|--------|
+| `Upgrade` | `$http_upgrade` |
+| `Connection` | `$connection_upgrade` |
+| `X-Forwarded-For` | `$proxy_add_x_forwarded_for` |
+
+这三条是 WebSocket 代理的关键，缺少则连接无法保持。
+
+**Nginx 修复方法**（如果自己配 Nginx）：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:3050;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_read_timeout 86400s;
+    proxy_send_timeout 86400s;
+}
+```
+
+### 2. 页面一直卡在"连接服务器..."
+
+**现象**：页面停留在"连接服务器..."，状态不再变化。
+
+**原因**：WebSocket 从未成功建立，或浏览器卡在 getUserMedia 权限请求。
+
+**检查**：
+
+- 确保域名/端口正确（内网用 `http://NAS-IP:3050`，外网需先确认反代配好）
+- 浏览器是否弹出了摄像头权限提示？如果不点允许或拒绝，8 秒后会超时降级
+- 浏览器开发者工具 Console 中是否有红色错误信息
+
+### 3. iPhone 看不到对方画面
+
+已通过 Canvas + JPEG 方案彻底解决。如果还不行：
+
+- 检查"接收中"状态是否出现 — 没出现说明 WebSocket 数据没到
+- 刷新页面，确保两端都在同一个房间（页面顶部显示"2 人在线"）
+
+### 4. 对方画面比例失调（被拉伸）
+
+已修复。Canvas 截图尺寸会自动匹配手机摄像头的原始宽高比（16:9 / 4:3 / 20:9 等）。
+
+### 5. Docker 构建失败：找不到 Dockerfile
+
+```bash
+# 确保你在项目根目录（有 Dockerfile 的那个目录）
+ls -la Dockerfile
+docker compose -f docker-compose.app-only.yml up -d
+```
+
+如果是从 GitHub 下载 ZIP，解压后先 `cd p2p-videochat` 进入子目录。
+
+### 6. 如何查看运行日志
+
+```bash
+# 查看服务日志
+docker logs videochat-app
+
+# 持续跟踪
+docker logs -f videochat-app
+```
+
+日志中会显示 `[main] xxx joined`（有人加入）和 `[main] xxx left`（有人离开），以及转发的消息数量。
+
+---
+
 ## 从 VPS 迁移到 NAS
 
 若你已在本 VPS 上运行此服务，迁移步骤：
