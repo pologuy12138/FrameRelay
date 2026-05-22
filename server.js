@@ -46,9 +46,8 @@ wss.on('connection', (ws) => {
     broadcast({ type: 'peer-joined', peerId });
 
     ws.on('message', (data, isBinary) => {
-        if (isBinary || Buffer.isBuffer(data)) {
+        if (isBinary) {
             const firstByte = Buffer.isBuffer(data) ? data[0] : '?';
-            if (firstByte === 1) console.log(`  ➔ audio ${data.length}B from ${peerId.substring(0,6)}`);
             const peersFwd = [];
             for (const [id, info] of peers) {
                 if (id !== peerId && info.ws.readyState === 1) {
@@ -56,15 +55,21 @@ wss.on('connection', (ws) => {
                     peersFwd.push(id.substring(0,6));
                 }
             }
-            if (firstByte === 1) console.log(`    → forwarded to ${peersFwd.join(',')}`);
+            if (firstByte === 1) console.log(`  ➔ legacy-audio ${data.length}B from ${peerId.substring(0,6)} → ${peersFwd.join(',')}`);
             return;
         }
         try {
-            const msg = JSON.parse(data);
+            const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+            const msg = JSON.parse(text);
+            if (msg.type && msg.type.startsWith('wr-')) {
+                console.log(`  ⇄ ${msg.type} from ${peerId.substring(0,6)} to ${(msg.to || '').substring(0,6)}`);
+            }
             if (msg.to) {
                 const target = peers.get(msg.to);
                 if (target && target.ws.readyState === 1) {
                     target.ws.send(JSON.stringify({ from: peerId, type: msg.type, data: msg.data }));
+                } else if (msg.type && msg.type.startsWith('wr-')) {
+                    console.log(`    ! target missing for ${msg.type}: ${msg.to}`);
                 }
             }
         } catch(e) {}
