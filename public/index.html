@@ -36,7 +36,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="header"><h1>FrameRelay</h1><span id="netStats">⬆ -- ⬇ -- KB/s</span></div>
 <div id="bar" class="waiting">启动中...</div>
 <div id="err"></div><div id="aDbg" style="font-size:11px;color:#888;text-align:center;flex-shrink:0"></div>
-<div id="firstByte" style="font-size:10px;color:#666;text-align:center;flex-shrink:0"></div>
 <div class="grid">
 <div class="box"><video id="localVideo" autoplay muted playsinline></video><div class="lbl">我</div></div>
 <div class="box">
@@ -52,18 +51,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </div>
 </div>
 <canvas id="capCanvas" style="display:none"></canvas>
+<audio id="remoteAudio" autoplay playsinline style="display:none"></audio>
 <script>
-const $=id=>document.getElementById(id), LV=$('localVideo'), RI=$('remoteImg'), PH=$('ph'), CV=$('capCanvas');
+const $=id=>document.getElementById(id), LV=$('localVideo'), RI=$('remoteImg'), PH=$('ph'), CV=$('capCanvas'), RA=$('remoteAudio');
 const FPS=10;
 let log=m=>console.log('FR:',m);
 let bar=(t,txt)=>{$('bar').className=t;$('bar').textContent=txt};
 let err=m=>{$('err').style.display='block';$('err').textContent='❌ '+m};
 
-let ws, lstream, havePeer=false, capInterval=null, aRec=null;
+let ws, lstream, havePeer=false, capInterval=null;
+let pc=null, makingOffer=false, ignoreOffer=false;
+let remoteId=null, aConnected=false;
 let upB=0, downB=0, lastUp=0, lastDown=0, si=null;
 function tu(n){upB+=n} function td(n){downB+=n}
 function ss(){if(si)return;si=setInterval(()=>{$('netStats').textContent=`⬆ ${((upB-lastUp)/1024).toFixed(1)} ⬇ ${((downB-lastDown)/1024).toFixed(1)} KB/s`;lastUp=upB;lastDown=downB;updateDebug()},1000)}
 function sx(){if(si){clearInterval(si);si=null}}
+
+// ---- TURN config ----
+const ICE_CONFIG = {
+  iceServers: [{
+    urls: ['turn:gcjp.372100.xyz:3478?transport=tcp'],
+    username: 'videochat',
+    credential: 'videochat123'
+  }],
+  iceTransportPolicy: 'relay'  // force TURN, no direct P2P
+};
 
 // ---- Media ----
 async function startMedia(){
@@ -77,7 +89,7 @@ async function startMedia(){
   bar('waiting','已就绪');ss();return true;
 }
 
-// ---- Video (unchanged - canvas → ws.send blob) ----
+// ---- Video (unchanged) ----
 function startCap(){
   stopCap();
   const go=()=>{
@@ -95,109 +107,107 @@ function startCap(){
 }
 function stopCap(){if(capInterval){clearInterval(capInterval);capInterval=null}}
 
-// ---- Audio: PCM via Web Audio API ----
-let aTx=0,aRx=0;
-let aProc=null,aStop=false;
-let aCtx=null;
-
-// Sender: MediaRecorder audio → WS (works cross-platform)
-function startAudio(){
-  if(aProc)return;
-  if(!lstream||!lstream.getAudioTracks||!lstream.getAudioTracks().length){
-    setTimeout(startAudio,500);return;
-  }
-  if(typeof MediaRecorder==='undefined') return;
-  const codecs=['audio/webm;codecs=opus','audio/mp4;codecs=mp4a.40.2','audio/webm','audio/mp4'];
-  let ac='';
-  for(const c of codecs){
-    try{if(MediaRecorder.isTypeSupported(c)){ac=c;break}}catch(e){}
-  }
-  if(!ac){log('no audio codec');return}
-  try{
-    const aStream=new MediaStream([lstream.getAudioTracks()[0]]);
-    aProc=new MediaRecorder(aStream,{mimeType:ac});
-    aProc.ondataavailable=e=>{
-      if(!e.data||!e.data.size||aStop||!ws||ws.readyState!==WebSocket.OPEN)return;
-      e.data.arrayBuffer().then(buf=>{
-        const c=new Uint8Array(1+buf.byteLength);
-        c[0]=1;c.set(new Uint8Array(buf),1);
-        ws.send(c);tu(c.length);
-        aTx++;
-      });
-    };
-    aProc.start(100);
-    log('audio MR:'+ac);
-  }catch(e){err('音频启动失败: '+e.message)}
+// ---- Audio: WebRTC via TURN TCP ----
+function closePC(){
+  if(pc){try{pc.close()}catch(e){}pc=null}
+  makingOffer=false;ignoreOffer=false;aConnected=false;
+  $('aDbg').textContent='';
 }
 
-function stopAudio(){
-  aStop=true;
-  if(aProc){try{aProc.stop()}catch(e){}aProc=null}
-  aChunks=[];if(aTimer){clearInterval(aTimer);aTimer=null}
-  if(aEl){aEl.remove();aEl=null}
-}
-
-// Receiver: blob URL with seek (pauses, then skips to near end)
-let aEl=null, aChunks=[], aTimer=null;
-
-function handleAudio(data){
-  aRx++; aChunks.push(data);
-  if(!aEl){
-    aEl=document.createElement('audio');
-    aEl.autoplay=true;
-    document.body.appendChild(aEl);
-  }
-  if(!aTimer) aTimer=setInterval(refreshAudio,2500);
-  if(aChunks.length<=3) refreshAudio(); // play first chunks immediately
-}
-
-function refreshAudio(){
-  if(!aChunks.length||!aEl)return;
-  // Keep last ~4 seconds
-  while(aChunks.length>60) aChunks.shift();
-  aEl.pause(); // prevent playing from position 0
-  const blob=new Blob(aChunks,{type:'audio/webm'});
-  const url=URL.createObjectURL(blob);
-  aEl.src=url;
-  aEl.onloadedmetadata=()=>{
-    aEl.currentTime=Math.max(0,aEl.duration-1.5);
-    aEl.play().catch(()=>{});
-  };
-  setTimeout(()=>URL.revokeObjectURL(url),3000);
-}
-
-// Receiver: Int16 PCM → AudioContext playback
-function handleAudio(data){
-  aRx++;
-  try{
-    if(!aCtx||aCtx.state==='closed'){
-      aCtx=new AudioContext();
-      aNextT=0;
-      // Resume if suspended (autoplay policy)
-      if(aCtx.state==='suspended') aCtx.resume();
+function createPC(){
+  closePC();
+  pc = new RTCPeerConnection(ICE_CONFIG);
+  pc.onicecandidate = e => {
+    if(e.candidate && ws && ws.readyState===WebSocket.OPEN){
+      ws.send(JSON.stringify({to:remoteId, type:'wr-can', data:e.candidate}));
     }
-    const pcm=new Int16Array(data);
-    const sr=aCtx.sampleRate;
-    const buf=aCtx.createBuffer(1,pcm.length,sr);
-    const ch=buf.getChannelData(0);
-    for(let i=0;i<pcm.length;i++) ch[i]=pcm[i]/32768;
-    const node=aCtx.createBufferSource();
-    node.buffer=buf;
-    node.connect(aCtx.destination);
-    const now=aCtx.currentTime;
-    if(aNextT<now+0.05) aNextT=now+0.05; // 50ms lookahead
-    node.start(aNextT);
-    aNextT+=pcm.length/sr;
-  }catch(e){log('aErr:'+e.message)}
+  };
+  pc.ontrack = e => {
+    log('audio track received');
+    RA.srcObject = e.streams[0];
+    aConnected = true;
+    updateDebug();
+  };
+  pc.onconnectionstatechange = () => {
+    if(pc.connectionState==='failed'||pc.connectionState==='disconnected'){
+      log('PC state: '+pc.connectionState);
+      closePC();
+      // Auto-reconnect after delay
+      if(remoteId && lstream) setTimeout(()=>{if(!pc) createAndOffer()},3000);
+    }
+  };
+  // Add local audio track
+  if(lstream && lstream.getAudioTracks().length){
+    for(const t of lstream.getAudioTracks()) pc.addTrack(t, lstream);
+  }
+}
+
+async function createAndOffer(){
+  if(!lstream||!remoteId||!ws||ws.readyState!==WebSocket.OPEN) return;
+  createPC();
+  try{
+    makingOffer = true;
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({to:remoteId, type:'wr-offer', data:pc.localDescription}));
+    log('offer sent');
+  }catch(e){log('offer err:'+e.message);makingOffer=false}
+}
+
+async function handleOffer(from, sdp){
+  remoteId = from;
+  createPC();
+  try{
+    // Polite peer: if collision, let remote offer win
+    if(makingOffer){
+      ignoreOffer = !politePeer();
+      if(ignoreOffer){log('ignoring offer (collision)');return}
+    }
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    ws.send(JSON.stringify({to:from, type:'wr-answer', data:pc.localDescription}));
+    log('answer sent');
+  }catch(e){log('handleOffer err:'+e.message)}
+}
+
+async function handleAnswer(sdp){
+  if(!pc) return;
+  try{
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    log('remote desc set');
+  }catch(e){log('handleAnswer err:'+e.message)}
+}
+
+async function handleCandidate(c){
+  if(!pc) return;
+  try{await pc.addIceCandidate(new RTCIceCandidate(c))}
+  catch(e){log('ICE err:'+e.message)}
+}
+
+// Simple polite peer: compare IDs to break ties
+function politePeer(){
+  // The peer with the larger ID acts as polite (ignores its own offer on collision)
+  // Since both peers generate random IDs, this works as a tiebreaker
+  return true; // Always polite - this means on collision we discard our offer
+}
+
+function startAudioChannel(){
+  if(pc || !remoteId) return;
+  // Wait for stream
+  if(!lstream||!lstream.getAudioTracks||!lstream.getAudioTracks().length){
+    setTimeout(startAudioChannel,500);return;
+  }
+  createAndOffer();
 }
 
 function updateDebug(){
-  const info=document.getElementById('aDbg');
+  const info=$('aDbg');
   if(!info)return;
-  const fb=document.getElementById('firstByte');
-  info.textContent='🎤Tx:'+aTx+' Rx:'+aRx+' |1st:'+(fb?fb.textContent:'?');
+  info.textContent='🎤 audio:'+(aConnected?'connected':'waiting');
 }
 
+// ---- Video frame receive (unchanged) ----
 function showFrame(data){
   td(data.byteLength);
   if(!havePeer)return;updateDebug();
@@ -212,33 +222,36 @@ function connect(){
   ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
   ws.binaryType='arraybuffer';
   ws.onopen=()=>{log('WS OK');bar('busy','获取设备...');startMedia()};
-  ws.onclose=()=>{log('closed');stopCap();stopAudio();sx();bar('err','断开');setTimeout(connect,3000)};
+  ws.onclose=()=>{log('closed');stopCap();closePC();sx();bar('err','断开');setTimeout(connect,3000)};
+
   ws.onmessage=e=>{
-    if(e.data instanceof ArrayBuffer){
-      td(e.data.byteLength);
-      const first=new Uint8Array(e.data,0,1)[0];
-      // Show first byte for debugging
-      document.getElementById('firstByte').textContent='0x'+first.toString(16);
-      if(first===1) handleAudio(e.data.slice(1));
-      else showFrame(e.data);
-      return;
-    }
+    // All binary = video (audio handled by WebRTC directly)
+    if(e.data instanceof ArrayBuffer){showFrame(e.data);return}
+
     try{
       const m=JSON.parse(e.data);
       switch(m.type){
         case 'init':
           havePeer=m.peers.length>0;
-          havePeer?bar('ok','对方已在线'):bar('waiting','等待对方加入...');
-          if(havePeer){startCap();startAudio()}
+          if(havePeer){
+            remoteId=m.peers[0];bar('ok','对方已在线');startCap();startAudioChannel();
+          }else{bar('waiting','等待对方加入...')}
           break;
         case 'peer-joined':
-          if(!havePeer){havePeer=true;bar('ok','对方已加入');startCap();startAudio()}
+          if(!havePeer){
+            havePeer=true;remoteId=m.peerId;bar('ok','对方已加入');startCap();
+            // Don't create audio channel - wait for the joiner's offer
+          }
           break;
+        // WebRTC audio signaling
+        case 'wr-offer': handleOffer(m.from, m.data);break;
+        case 'wr-answer': handleAnswer(m.data);break;
+        case 'wr-can': handleCandidate(m.data);break;
+        // Room management
         case 'peer-left': case 'hangup':
-          havePeer=false;stopCap();stopAudio();
+          havePeer=false;stopCap();closePC();remoteId=null;
           RI.style.display='none';PH.style.display='block';PH.textContent='等待对方加入...';
           $('netStats').textContent='⬆ -- ⬇ -- KB/s';
-          $('firstByte').textContent='';
           if(m.type==='hangup')PH.textContent='对方已挂断';
           break;
         case 'room-full':
@@ -264,7 +277,7 @@ $('btnCam').onclick=function(){
 };
 $('btnHangup').onclick=function(){
   if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'hangup'}));
-  stopCap();stopAudio();
+  stopCap();closePC();remoteId=null;
   RI.style.display='none';PH.style.display='block';PH.textContent='已挂断';
   bar('waiting','已挂断');
 };
