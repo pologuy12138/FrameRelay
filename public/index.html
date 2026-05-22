@@ -107,8 +107,9 @@ function startAudio(){
     setTimeout(startAudio,500);return;
   }
   try{
-    aSnd=new AudioContext();
+    aSnd=new AudioContext(); aRcv=new AudioContext(); // both in user gesture
     if(aSnd.state==='suspended') aSnd.resume();
+    if(aRcv.state==='suspended') aRcv.resume();
     const src=aSnd.createMediaStreamSource(lstream);
     aProc=aSnd.createScriptProcessor(2048,1,1);
     aProc.onaudioprocess=e=>{
@@ -118,7 +119,7 @@ function startAudio(){
       for(let i=0;i<input.length;i++) pcm[i]=Math.max(-32768,Math.min(32767,input[i]*32768));
       const c=new Uint8Array(1+pcm.buffer.byteLength);
       c[0]=1;c.set(new Uint8Array(pcm.buffer),1);
-      ws.send(c);tu(c.length); // send Uint8Array directly (not .buffer)
+      ws.send(c);tu(c.length);
       aTx++;
     };
     const mute=aSnd.createGain();
@@ -140,11 +141,8 @@ function stopAudio(){
 function handleAudio(data){
   aRx++;
   try{
-    if(!aRcv||aRcv.state==='closed'){
-      aRcv=new AudioContext();
-      aNextT=0;
-      if(aRcv.state==='suspended') aRcv.resume();
-    }
+    if(!aRcv){ aRcv=new AudioContext(); aNextT=0; if(aRcv.state==='suspended') aRcv.resume(); }
+    if(aRcv.state==='closed') return;
     const pcm=new Int16Array(data);
     const sr=aRcv.sampleRate;
     const buf=aRcv.createBuffer(1,pcm.length,sr);
