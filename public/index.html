@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>视频聊天</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1a1a2e;color:#fff;height:100vh}
+.container{max-width:1200px;margin:0 auto;padding:16px;height:100vh;display:flex;flex-direction:column}
+.header{display:flex;justify-content:space-between;align-items:center;padding:12px 0;flex-shrink:0}
+.header h1{font-size:18px;font-weight:600}
+#netStats{font-size:13px;color:#aaa;font-family:monospace}
+#bar{text-align:center;padding:6px;font-size:13px;border-radius:8px;margin-bottom:4px;flex-shrink:0}
+#bar.waiting{background:#2a2a3e;color:#aaa}
+#bar.ok{background:#1a3a2e;color:#44ff44}
+#bar.busy{background:#3a3a5e;color:#ffcc00}
+#bar.err{background:#3a1a2e;color:#ff6666}
+#err{color:#e94560;font-size:12px;text-align:center;padding:4px;display:none;flex-shrink:0}
+.grid{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:12px;min-height:0;padding:8px 0}
+.box{position:relative;background:#16213e;border-radius:12px;overflow:hidden}
+.box img,.box video{width:100%;height:100%;object-fit:cover;display:block}
+.box .lbl{position:absolute;bottom:12px;left:12px;background:rgba(0,0,0,.6);padding:4px 10px;border-radius:6px;font-size:13px}
+.box .ph{color:#555;font-size:14px;padding:20px;text-align:center;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}
+#localVideo{transform:scaleX(-1)}
+.controls{display:flex;justify-content:center;gap:16px;padding:16px 0;flex-shrink:0}
+.controls button{width:48px;height:48px;border-radius:50%;border:none;cursor:pointer;font-size:20px;background:#16213e;color:#fff}
+.controls button:hover{background:#0f3460}
+.controls button.off,.controls button.hangup:hover{background:#e94560}
+.controls button.hangup{background:#e94560;width:56px;height:56px}
+@media(max-width:600px){.grid{grid-template-columns:1fr;grid-template-rows:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header">
+<h1>视频聊天</h1>
+<span id="netStats">⬆ -- ⬇ -- KB/s</span>
+</div>
+<div id="bar" class="waiting">启动中...</div>
+<div id="err"></div>
+<div class="grid">
+<div class="box">
+<video id="localVideo" autoplay muted playsinline></video>
+<div class="lbl">我</div>
+</div>
+<div class="box">
+<img id="remoteImg" style="display:none">
+<div class="ph" id="ph">等待对方加入...</div>
+<div class="lbl">对方</div>
+</div>
+</div>
+<div class="controls">
+<button id="btnMic">🎤</button>
+<button id="btnCam">📹</button>
+<button class="hangup" id="btnHangup">📞</button>
+</div>
+</div>
+
+<canvas id="capCanvas" style="display:none"></canvas>
+
+<script>
+// ---- DOM ----
+const $=id=>document.getElementById(id);
+const LV=$('localVideo'), RI=$('remoteImg'), PH=$('ph'), CV=$('capCanvas');
+const FPS=10;
+let log=m=>console.log('VC:',m);
+let bar=(t,txt)=>{$('bar').className=t;$('bar').textContent=txt};
+let err=m=>{$('err').style.display='block';$('err').textContent='❌ '+m};
+
+// ---- State ----
+let ws, lstream, havePeer=false;
+let capInterval=null;
+
+// ---- Network stats ----
+let upBytes=0, downBytes=0, lastUp=0, lastDown=0;
+let statsInterval=null;
+
+function trackUp(n){upBytes+=n}
+function trackDown(n){downBytes+=n}
+
+function startStats(){
+  stopStats();
+  statsInterval = setInterval(()=>{
+    const up = upBytes - lastUp;
+    const dn = downBytes - lastDown;
+    lastUp = upBytes; lastDown = downBytes;
+    const upK = (up / 1024).toFixed(1);
+    const dnK = (dn / 1024).toFixed(1);
+    $('netStats').textContent = `⬆ ${upK} ⬇ ${dnK} KB/s`;
+  },1000);
+}
+function stopStats(){
+  if(statsInterval){clearInterval(statsInterval);statsInterval=null}
+}
+
+// ---- Media ----
+async function startMedia(){
+  log('getMedia');
+  try{
+    lstream = await Promise.race([
+      navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480}},audio:false}),
+      new Promise((_,r)=>setTimeout(()=>r('timeout'),7000))
+    ]);
+  }catch(e){
+    err('摄像头不可用，请检查权限');
+    return false;
+  }
+  LV.srcObject = lstream;
+  bar('waiting','已就绪');
+  log('media OK');
+  startStats();
+  return true;
+}
+
+// ---- Sending: canvas capture ----
+function startCap(){
+  stopCap();
+  const v = LV;
+  const tryStart = ()=>{
+    if(v.readyState < 2 || !v.videoWidth){ setTimeout(tryStart,200); return; }
+    const maxW = 640;
+    const scale = Math.min(maxW / v.videoWidth, 480 / v.videoHeight, 1);
+    CV.width = Math.round(v.videoWidth * scale);
+    CV.height = Math.round(v.videoHeight * scale);
+    const ctx = CV.getContext('2d');
+    capInterval = setInterval(()=>{
+      if(!ws||ws.readyState!==WebSocket.OPEN) return;
+      try{
+        ctx.drawImage(v,0,0,CV.width,CV.height);
+        CV.toBlob(blob=>{
+          if(blob&&blob.size>100&&ws&&ws.readyState===WebSocket.OPEN){
+            ws.send(blob);
+            trackUp(blob.size);
+          }
+        },'image/jpeg',0.4);
+      }catch(e){log('cap err:'+e.message)}
+    },1000/FPS);
+    log('cap started '+FPS+'fps @ '+CV.width+'x'+CV.height);
+  };
+  tryStart();
+}
+
+function stopCap(){
+  if(capInterval){clearInterval(capInterval);capInterval=null}
+}
+
+// ---- Receiving: JPEG display ----
+function showFrame(data){
+  trackDown(data.byteLength);
+  if(!havePeer) return;
+  if(PH.style.display!=='none'){PH.style.display='none';RI.style.display='block';bar('ok','接收中')}
+  const blob = new Blob([data],{type:'image/jpeg'});
+  const url = URL.createObjectURL(blob);
+  RI.src = url;
+  setTimeout(()=>URL.revokeObjectURL(url),200);
+}
+
+// ---- WS ----
+const WS_URL=(location.protocol==='https:'?'wss://':'ws://')+location.host;
+
+function connect(){
+  bar('busy','连接服务器...');
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = ()=>{ log('WS OK'); bar('busy','获取设备...'); startMedia(); };
+  ws.onclose = ()=>{ log('closed'); stopCap(); stopStats(); bar('err','断开'); setTimeout(connect,3000); };
+
+  ws.onmessage = e=>{
+    if(e.data instanceof ArrayBuffer){
+      showFrame(e.data);
+      return;
+    }
+    try{
+      const m = JSON.parse(e.data);
+      switch(m.type){
+        case 'init':
+          havePeer = m.peers.length>0;
+          if(havePeer){ bar('ok','对方已在线'); startCap(); }
+          else bar('waiting','等待对方加入...');
+          break;
+        case 'peer-joined':
+          if(!havePeer){ havePeer=true; bar('ok','对方已加入'); startCap(); }
+          break;
+        case 'peer-left':
+          havePeer=false; stopCap();
+          RI.style.display='none'; PH.style.display='block'; PH.textContent='等待对方加入...';
+          bar('waiting','等待对方加入...');
+          $('netStats').textContent='⬆ -- ⬇ -- KB/s';
+          break;
+        case 'hangup':
+          havePeer=false; stopCap();
+          RI.style.display='none'; PH.style.display='block'; PH.textContent='对方已挂断';
+          bar('waiting','等待对方加入...');
+          break;
+        case 'room-full':
+          err('聊天室已满（最多2人），请稍后再试');
+          bar('err','聊天室已满');
+          break;
+      }
+    }catch(e){err('消息错误:'+e.message)}
+  };
+}
+
+// ---- Controls ----
+let mOn=true,cOn=true;
+$('btnMic').onclick=function(){
+  mOn=!mOn;this.className=mOn?'':'off';this.textContent=mOn?'🎤':'🔇';
+};
+$('btnCam').onclick=function(){
+  cOn=!cOn;
+  if(lstream)lstream.getVideoTracks().forEach(t=>t.enabled=cOn);
+  this.className=cOn?'':'off';this.textContent=cOn?'📹':'🚫';
+};
+$('btnHangup').onclick=function(){
+  if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'hangup'}));
+  stopCap();
+  RI.style.display='none';PH.style.display='block';PH.textContent='已挂断';
+  bar('waiting','已挂断');
+};
+
+connect();
+</script>
+</body>
+</html>

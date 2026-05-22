@@ -1,0 +1,23 @@
+# ============================================================
+# 极简方案：仅启动 Node.js 服务（无 Nginx/SSL）
+# 适合：NAS 内网使用、或用已有反代服务的环境
+#
+# 使用方式：
+#   docker compose -f docker-compose.app-only.yml up -d
+#
+# 访问：http://你的NASIP:3000
+#
+# 如需外网 HTTPS 访问，建议在 NAS 的反代管理后台配置：
+#   上游地址 → http://127.0.0.1:3000
+#   开启 WebSocket 支持
+# ============================================================
+
+version: "3.9"
+
+services:
+  app:
+    build: .
+    container_name: videochat-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"             # HTTP（内网用，或自行套 HTTPS 反代）

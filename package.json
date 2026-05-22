@@ -1,0 +1,13 @@
+{
+  "name": "p2p-videochat",
+  "version": "1.0.0",
+  "description": "轻量级 P2P 视频聊天服务 - 通过 WebRTC Canvas + WebSocket 实现端到端视频通话",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.0.0"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,50 @@
+version: "3.9"
+
+# ============================================================
+# 轻量方案：仅 Node.js 服务 + Nginx 反代 + Let's Encrypt 证书
+# 适合 NAS / VPS 直接使用
+#
+# 使用方式：
+#   1. 修改 .env 中的 DOMAIN 为你的域名
+#   2. 确保域名 DNS 指向这台机器
+#   3. docker compose up -d
+#   4. 首次启动后 certbot 会自动申请 SSL 证书
+# ============================================================
+
+services:
+  app:
+    build: .
+    container_name: videochat-app
+    restart: unless-stopped
+    expose:
+      - "3000"
+    networks:
+      - vc-net
+
+  nginx:
+    image: nginx:alpine
+    container_name: videochat-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "8444:8444"             # HTTPS 端口（可自行修改）
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certbot/www:/var/www/certbot:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+    depends_on:
+      - app
+    networks:
+      - vc-net
+
+  certbot:
+    image: certbot/certbot
+    container_name: videochat-certbot
+    volumes:
+      - ./certbot/www:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+networks:
+  vc-net:
+    driver: bridge
