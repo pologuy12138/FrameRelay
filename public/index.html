@@ -35,7 +35,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="container">
 <div class="header"><h1>FrameRelay</h1><span id="netStats">⬆ -- ⬇ -- KB/s</span></div>
 <div id="bar" class="waiting">启动中...</div>
-<div id="err"></div>
+<div id="err"></div><div id="aDbg" style="font-size:11px;color:#888;text-align:center;flex-shrink:0"></div>
 <div class="grid">
 <div class="box"><video id="localVideo" autoplay muted playsinline></video><div class="lbl">我</div></div>
 <div class="box">
@@ -62,7 +62,7 @@ let ws, lstream, havePeer=false, capInterval=null, aRec=null;
 let aMs=null, aSb=null, aQ=[];
 let upB=0, downB=0, lastUp=0, lastDown=0, si=null;
 function tu(n){upB+=n} function td(n){downB+=n}
-function ss(){if(si)return;si=setInterval(()=>{$('netStats').textContent=`⬆ ${((upB-lastUp)/1024).toFixed(1)} ⬇ ${((downB-lastDown)/1024).toFixed(1)} KB/s`;lastUp=upB;lastDown=downB},1000)}
+function ss(){if(si)return;si=setInterval(()=>{$('netStats').textContent=`⬆ ${((upB-lastUp)/1024).toFixed(1)} ⬇ ${((downB-lastDown)/1024).toFixed(1)} KB/s`;lastUp=upB;lastDown=downB;updateDebug()},1000)}
 function sx(){if(si){clearInterval(si);si=null}}
 
 // ---- Media ----
@@ -96,28 +96,35 @@ function startCap(){
 function stopCap(){if(capInterval){clearInterval(capInterval);capInterval=null}}
 
 // ---- Audio ----
+let aTx=0,aRx=0,aInit=0; // debug counters
+
 function startAudio(){
   if(aRec)return;
-  if(typeof MediaRecorder==='undefined'){log('no MediaRecorder');return}
-  // Find best supported audio codec
+  if(typeof MediaRecorder==='undefined'){bar('err','不支持的浏览器');return}
   const codecs=['audio/webm;codecs=opus','audio/mp4;codecs=mp4a.40.2','audio/webm','audio/mp4'];
   let ac='';
-  for(const c of codecs){try{if(MediaRecorder.isTypeSupported(c)){ac=c;break}}catch(e){}}
-  if(!ac){log('no audio codec');return}
+  for(const c of codecs){try{if(MediaRecorder.isTypeSupported(c)){ac=c;break}log('skip '+c)}catch(e){}}
+  if(!ac){err('未找到音频编码');return}
   try{
     aRec=new MediaRecorder(lstream,{mimeType:ac});
     aRec.ondataavailable=e=>{
       if(!e.data||!e.data.size)return;
-      // Send with 0x01 prefix to distinguish from JPEG (0xFFD8)
       e.data.arrayBuffer().then(buf=>{
         const p=new Uint8Array(buf.byteLength+1);p[0]=1;
         p.set(new Uint8Array(buf),1);
         ws.send(p.buffer);tu(p.byteLength);
+        if(++aTx===1)log('audio 1st sent');
       });
     };
     aRec.start(100);
-    log('audio: '+ac);
-  }catch(e){log('audio err: '+e.message)}
+    log('audio start OK: '+ac);
+  }catch(e){err('音频录制失败: '+e.message)}
+}
+
+function updateDebug(){
+  const info=document.getElementById('aDbg');
+  if(!info)return;
+  info.textContent='🎤Tx:'+aTx+' Rx:'+aRx+' Plyr:'+aInit;
 }
 
 function stopAudio(){
@@ -126,6 +133,7 @@ function stopAudio(){
 
 // ---- Receive ----
 function handleAudio(data){
+  aRx++;updateDebug();
   if(!aMs){
     // First audio chunk - init player
     const codecs=['audio/webm;codecs=opus','audio/mp4','audio/webm','audio/mp4;codecs=mp4a.40.2'];
@@ -136,6 +144,7 @@ function handleAudio(data){
         ra.autoplay=true;ra.src=URL.createObjectURL(aMs);
         ra.play().catch(()=>{});
         document.body.appendChild(ra);
+        aInit++;updateDebug();
         aMs.onsourceopen=()=>{
           try{
             aSb=aMs.addSourceBuffer(codecs[i]);
@@ -171,7 +180,7 @@ function drainA(){
 
 function showFrame(data){
   td(data.byteLength);
-  if(!havePeer)return;
+  if(!havePeer)return;updateDebug();
   if(PH.style.display!=='none'){PH.style.display='none';RI.style.display='block';bar('ok','接收中')}
   const url=URL.createObjectURL(new Blob([data],{type:'image/jpeg'}));
   RI.src=url;setTimeout(()=>URL.revokeObjectURL(url),200);
