@@ -17,7 +17,7 @@ services:
     container_name: videochat-app
     restart: unless-stopped
     expose:
-      - "3000"
+      - "3050"
     networks:
       - vc-net
 

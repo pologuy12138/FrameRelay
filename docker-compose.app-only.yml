@@ -5,10 +5,10 @@
 # 使用方式：
 #   docker compose -f docker-compose.app-only.yml up -d
 #
-# 访问：http://你的NASIP:3000
+# 访问：http://你的NASIP:3050
 #
 # 如需外网 HTTPS 访问，建议在 NAS 的反代管理后台配置：
-#   上游地址 → http://127.0.0.1:3000
+#   上游地址 → http://127.0.0.1:3050
 #   开启 WebSocket 支持
 # ============================================================
 
@@ -20,4 +20,4 @@ services:
     container_name: videochat-app
     restart: unless-stopped
     ports:
-      - "3000:3000"             # HTTP（内网用，或自行套 HTTPS 反代）
+      - "3050:3050"             # HTTP（内网用，或自行套 HTTPS 反代）

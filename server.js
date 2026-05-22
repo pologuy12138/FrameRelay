@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 
-const PORT = 3000;
+const PORT = 3050;
 const ROOM = 'main';
 const MAX_PEERS = 2;
 const MIME = {

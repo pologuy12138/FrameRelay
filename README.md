@@ -61,10 +61,10 @@ docker compose up -d
 docker compose -f docker-compose.app-only.yml up -d
 ```
 
-访问 `http://你的NAS-IP:3000`。如需外网访问，在 NAS 的反代管理后台配置：
+访问 `http://你的NAS-IP:3050`。如需外网访问，在 NAS 的反代管理后台配置：
 
 - 来源：你的域名 / HTTPS 端口
-- 目标：http://127.0.0.1:3000
+- 目标：http://127.0.0.1:3050
 - ✅ 开启 WebSocket 支持
 
 ### 方式三：本机运行（无 Docker）
@@ -74,7 +74,7 @@ npm install
 npm start
 ```
 
-访问 `http://localhost:3000`。
+访问 `http://localhost:3050`。
 
 ---
 
@@ -104,7 +104,7 @@ const MAX_PEERS = 2;  // 改为 4 则允许 4 人同时在线
 
 ### 修改端口
 
-- 纯 Node.js 模式：编辑 `server.js` 中的 `PORT`
+- 纯 Node.js 模式：编辑 `server.js` 中的 `PORT`（默认 3050）
 - Docker + Nginx 模式：编辑 `docker-compose.yml` 中 nginx 的端口映射
 
 ### 编码参数
