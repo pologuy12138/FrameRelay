@@ -73,8 +73,8 @@ const ICE_CONFIG = {
     urls: ['turn:gcjp.372100.xyz:3478?transport=tcp'],
     username: 'videochat',
     credential: 'videochat123'
-  }],
-  iceTransportPolicy: 'relay'  // force TURN, no direct P2P
+  }]
+  // removed iceTransportPolicy:'relay' — let browser use TURN as only server, fall back naturally
 };
 
 // ---- Media ----
@@ -129,12 +129,20 @@ function createPC(){
     updateDebug();
   };
   pc.onconnectionstatechange = () => {
-    if(pc.connectionState==='failed'||pc.connectionState==='disconnected'){
-      log('PC state: '+pc.connectionState);
+    const s = pc.connectionState;
+    bar('busy','audio:'+s);
+    if(s==='connected'||s==='completed'){bar('ok','对方已在线');updateDebug()}
+    if(s==='failed'||s==='disconnected'){
+      log('PC state: '+s);
       closePC();
-      // Auto-reconnect after delay
       if(remoteId && lstream) setTimeout(()=>{if(!pc) createAndOffer()},3000);
     }
+  };
+  pc.oniceconnectionstatechange = () => {
+    log('ICE: '+pc.iceConnectionState);
+  };
+  pc.onicegatheringstatechange = () => {
+    log('ICE gather: '+pc.iceGatheringState);
   };
   // Add local audio track
   if(lstream && lstream.getAudioTracks().length){
@@ -204,7 +212,9 @@ function startAudioChannel(){
 function updateDebug(){
   const info=$('aDbg');
   if(!info)return;
-  info.textContent='🎤 audio:'+(aConnected?'connected':'waiting');
+  info.textContent='🎤 audio:'+(aConnected?'✅':'⏳')+
+    ' | PC:'+(pc?pc.connectionState:'null')+
+    ' | ICE:'+(pc?pc.iceConnectionState:'-');
 }
 
 // ---- Video frame receive (unchanged) ----
