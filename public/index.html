@@ -74,11 +74,6 @@ async function startMedia(){
     ]);
   }catch(e){err('摄像头/麦克风不可用');return false}
   LV.srcObject = lstream;
-  // Create AudioContext within getUserMedia's user gesture
-  if(!aCtx && typeof AudioContext!=='undefined'){
-    aCtx=new AudioContext();
-    if(aCtx.state==='suspended') aCtx.resume();
-  }
   bar('waiting','已就绪');ss();return true;
 }
 
@@ -103,62 +98,72 @@ function stopCap(){if(capInterval){clearInterval(capInterval);capInterval=null}}
 // ---- Audio: PCM via Web Audio API ----
 let aTx=0,aRx=0;
 let aProc=null,aStop=false;
-let aNextT=0;
-let aCtx=null; // created inside startMedia() within getUserMedia gesture
+let aCtx=null;
 
-// Sender: capture microphone → Int16 PCM → WS
+// Sender: MediaRecorder audio → WS (works cross-platform)
 function startAudio(){
   if(aProc)return;
   if(!lstream||!lstream.getAudioTracks||!lstream.getAudioTracks().length){
     setTimeout(startAudio,500);return;
   }
-  if(!aCtx || aCtx.state==='closed') return;
-  // Ensure context is running
-  if(aCtx.state==='suspended') aCtx.resume();
+  if(typeof MediaRecorder==='undefined') return;
+  const codecs=['audio/webm;codecs=opus','audio/mp4;codecs=mp4a.40.2','audio/webm','audio/mp4'];
+  let ac='';
+  for(const c of codecs){
+    try{if(MediaRecorder.isTypeSupported(c)){ac=c;break}}catch(e){}
+  }
+  if(!ac){log('no audio codec');return}
   try{
-    const src=aCtx.createMediaStreamSource(lstream);
-    aProc=aCtx.createScriptProcessor(2048,1,1);
-    aProc.onaudioprocess=e=>{
-      if(aStop||!ws||ws.readyState!==WebSocket.OPEN)return;
-      const input=e.inputBuffer.getChannelData(0);
-      const pcm=new Int16Array(input.length);
-      for(let i=0;i<input.length;i++) pcm[i]=Math.max(-32768,Math.min(32767,input[i]*32768));
-      const c=new Uint8Array(1+pcm.buffer.byteLength);
-      c[0]=1;c.set(new Uint8Array(pcm.buffer),1);
-      ws.send(c);tu(c.length);
-      aTx++;
+    const aStream=new MediaStream([lstream.getAudioTracks()[0]]);
+    aProc=new MediaRecorder(aStream,{mimeType:ac});
+    aProc.ondataavailable=e=>{
+      if(!e.data||!e.data.size||aStop||!ws||ws.readyState!==WebSocket.OPEN)return;
+      e.data.arrayBuffer().then(buf=>{
+        const c=new Uint8Array(1+buf.byteLength);
+        c[0]=1;c.set(new Uint8Array(buf),1);
+        ws.send(c);tu(c.length);
+        aTx++;
+      });
     };
-    const mute=aCtx.createGain();
-    mute.gain.value=0;
-    src.connect(aProc); aProc.connect(mute); mute.connect(aCtx.destination);
-    log('audio send @'+aSnd.sampleRate+'Hz');
+    aProc.start(100);
+    log('audio MR:'+ac);
   }catch(e){err('音频启动失败: '+e.message)}
 }
 
 function stopAudio(){
   aStop=true;
-  if(aProc){aProc.disconnect();aProc=null}
-  aNextT=0;
+  if(aProc){try{aProc.stop()}catch(e){}aProc=null}
+  aChunks=[];if(aTimer){clearInterval(aTimer);aTimer=null}
+  if(aEl){aEl.remove();aEl=null}
 }
 
-// Receiver: Int16 PCM → AudioContext playback
+// Receiver: blob URL with seek (pauses, then skips to near end)
+let aEl=null, aChunks=[], aTimer=null;
+
 function handleAudio(data){
-  aRx++;
-  if(!aCtx||aCtx.state==='closed') return;
-  if(aCtx.state==='suspended') aCtx.resume();
-  try{
-    const pcm=new Int16Array(data);
-    const sr=aCtx.sampleRate;
-    const buf=aCtx.createBuffer(1,pcm.length,sr);
-    const ch=buf.getChannelData(0);
-    for(let i=0;i<pcm.length;i++) ch[i]=pcm[i]/32768;
-    const node=aCtx.createBufferSource();
-    node.buffer=buf;
-    node.connect(aCtx.destination);
-    if(aNextT<aCtx.currentTime+0.05) aNextT=aCtx.currentTime+0.05;
-    node.start(aNextT);
-    aNextT+=pcm.length/sr;
-  }catch(e){log('aErr:'+e.message)}
+  aRx++; aChunks.push(data);
+  if(!aEl){
+    aEl=document.createElement('audio');
+    aEl.autoplay=true;
+    document.body.appendChild(aEl);
+  }
+  if(!aTimer) aTimer=setInterval(refreshAudio,2500);
+  if(aChunks.length<=3) refreshAudio(); // play first chunks immediately
+}
+
+function refreshAudio(){
+  if(!aChunks.length||!aEl)return;
+  // Keep last ~4 seconds
+  while(aChunks.length>60) aChunks.shift();
+  aEl.pause(); // prevent playing from position 0
+  const blob=new Blob(aChunks,{type:'audio/webm'});
+  const url=URL.createObjectURL(blob);
+  aEl.src=url;
+  aEl.onloadedmetadata=()=>{
+    aEl.currentTime=Math.max(0,aEl.duration-1.5);
+    aEl.play().catch(()=>{});
+  };
+  setTimeout(()=>URL.revokeObjectURL(url),3000);
 }
 
 // Receiver: Int16 PCM → AudioContext playback
