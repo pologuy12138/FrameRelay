@@ -136,7 +136,7 @@ function stopAudio(){
   if(aRec){aRec.stop();aRec=null}
 }
 
-// ---- Receive: audio via blob URL (no MediaSource) ----
+// ---- Receive: audio via blob URL with seeking ----
 let aBuf=[], aEl=null, aTimer=null, aPlayed=false;
 
 function handleAudio(data){
@@ -144,19 +144,27 @@ function handleAudio(data){
   aBuf.push(data);
   if(!aEl){
     aEl=document.createElement('audio');
-    aEl.autoplay=true;
+    aEl.autoplay=true;aEl.volume=1;
     document.body.appendChild(aEl);
   }
-  if(!aTimer) aTimer=setInterval(refreshAudio,2000);
+  if(!aTimer) aTimer=setInterval(refreshAudio,2500);
   if(!aPlayed){aPlayed=true;refreshAudio()}
 }
 
 function refreshAudio(){
   if(!aBuf.length||!aEl)return;
+  // Keep last ~4s (40 chunks at 100ms) to bound memory
+  while(aBuf.length>60) aBuf.shift();
   const blob=new Blob(aBuf,{type:'audio/webm'});
   const url=URL.createObjectURL(blob);
+  const wasPlaying=!aEl.paused;
   aEl.src=url;
   aEl.play().catch(()=>{});
+  // Seek forward to skip already-played content
+  aEl.onloadedmetadata=()=>{
+    const skipTo=Math.max(0,aEl.duration-2); // leave last 2s
+    if(skipTo>0.5) aEl.currentTime=skipTo;
+  };
   setTimeout(()=>URL.revokeObjectURL(url),3000);
 }
 
