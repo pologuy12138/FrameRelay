@@ -151,15 +151,18 @@ function createPC(){
 }
 
 async function createAndOffer(){
-  if(!lstream||!remoteId||!ws||ws.readyState!==WebSocket.OPEN) return;
+  if(!lstream||!remoteId||!ws||ws.readyState!==WebSocket.OPEN){err('缺少:stream='+!!lstream+' peer='+!!remoteId+' ws='+(ws?ws.readyState:-1));return}
   createPC();
   try{
     makingOffer = true;
     const offer = await pc.createOffer();
+    log('offer created');
     await pc.setLocalDescription(offer);
     ws.send(JSON.stringify({to:remoteId, type:'wr-offer', data:pc.localDescription}));
-    log('offer sent');
-  }catch(e){log('offer err:'+e.message);makingOffer=false}
+    log('offer sent to '+remoteId);
+    bar('busy','audio:offer sent');
+    updateDebug();
+  }catch(e){err('WebRTC offer失败: '+e.message);makingOffer=false;closePC()}
 }
 
 async function handleOffer(from, sdp){
@@ -176,7 +179,9 @@ async function handleOffer(from, sdp){
     await pc.setLocalDescription(answer);
     ws.send(JSON.stringify({to:from, type:'wr-answer', data:pc.localDescription}));
     log('answer sent');
-  }catch(e){log('handleOffer err:'+e.message)}
+    bar('busy','audio:answer sent');
+    updateDebug();
+  }catch(e){err('WebRTC answer失败: '+e.message);closePC()}
 }
 
 async function handleAnswer(sdp){
@@ -202,10 +207,12 @@ function politePeer(){
 
 function startAudioChannel(){
   if(pc || !remoteId) return;
-  // Wait for stream
   if(!lstream||!lstream.getAudioTracks||!lstream.getAudioTracks().length){
+    log('audioWaiting: stream='+(lstream?'has':'null')+' tracks='+(lstream&&lstream.getAudioTracks?lstream.getAudioTracks().length:'NA'));
+    bar('busy','audio:获取麦克风中...');
     setTimeout(startAudioChannel,500);return;
   }
+  bar('busy','audio:创建连接...');
   createAndOffer();
 }
 
