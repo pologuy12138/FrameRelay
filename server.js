@@ -47,11 +47,16 @@ wss.on('connection', (ws) => {
 
     ws.on('message', (data, isBinary) => {
         if (isBinary || Buffer.isBuffer(data)) {
+            const firstByte = Buffer.isBuffer(data) ? data[0] : '?';
+            if (firstByte === 1) console.log(`  ➔ audio ${data.length}B from ${peerId.substring(0,6)}`);
+            const peersFwd = [];
             for (const [id, info] of peers) {
                 if (id !== peerId && info.ws.readyState === 1) {
                     info.ws.send(data, { binary: true });
+                    peersFwd.push(id.substring(0,6));
                 }
             }
+            if (firstByte === 1) console.log(`    → forwarded to ${peersFwd.join(',')}`);
             return;
         }
         try {

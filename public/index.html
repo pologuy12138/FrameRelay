@@ -36,6 +36,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="header"><h1>FrameRelay</h1><span id="netStats">⬆ -- ⬇ -- KB/s</span></div>
 <div id="bar" class="waiting">启动中...</div>
 <div id="err"></div><div id="aDbg" style="font-size:11px;color:#888;text-align:center;flex-shrink:0"></div>
+<div id="firstByte" style="font-size:10px;color:#666;text-align:center;flex-shrink:0"></div>
 <div class="grid">
 <div class="box"><video id="localVideo" autoplay muted playsinline></video><div class="lbl">我</div></div>
 <div class="box">
@@ -117,7 +118,7 @@ function startAudio(){
       for(let i=0;i<input.length;i++) pcm[i]=Math.max(-32768,Math.min(32767,input[i]*32768));
       const c=new Uint8Array(1+pcm.buffer.byteLength);
       c[0]=1;c.set(new Uint8Array(pcm.buffer),1);
-      ws.send(c.buffer);tu(c.byteLength);
+      ws.send(c);tu(c.length); // send Uint8Array directly (not .buffer)
       aTx++;
     };
     const mute=aSnd.createGain();
@@ -186,7 +187,8 @@ function handleAudio(data){
 function updateDebug(){
   const info=document.getElementById('aDbg');
   if(!info)return;
-  info.textContent='🎤Tx:'+aTx+' Rx:'+aRx;
+  const fb=document.getElementById('firstByte');
+  info.textContent='🎤Tx:'+aTx+' Rx:'+aRx+' |1st:'+(fb?fb.textContent:'?');
 }
 
 function showFrame(data){
@@ -207,8 +209,9 @@ function connect(){
   ws.onmessage=e=>{
     if(e.data instanceof ArrayBuffer){
       td(e.data.byteLength);
-      // First byte: 0x01 = audio, 0xFFD8 = JPEG video
       const first=new Uint8Array(e.data,0,1)[0];
+      // Show first byte for debugging
+      document.getElementById('firstByte').textContent='0x'+first.toString(16);
       if(first===1) handleAudio(e.data.slice(1));
       else showFrame(e.data);
       return;
@@ -228,6 +231,7 @@ function connect(){
           havePeer=false;stopCap();stopAudio();
           RI.style.display='none';PH.style.display='block';PH.textContent='等待对方加入...';
           $('netStats').textContent='⬆ -- ⬇ -- KB/s';
+          $('firstByte').textContent='';
           if(m.type==='hangup')PH.textContent='对方已挂断';
           break;
         case 'room-full':
