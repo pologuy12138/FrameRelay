@@ -94,78 +94,74 @@ function startCap(){
 }
 function stopCap(){if(capInterval){clearInterval(capInterval);capInterval=null}}
 
-// ---- Audio ----
-let aTx=0,aRx=0,aInit=0; // debug counters
+// ---- Audio: PCM via Web Audio API (universal, no codec issues) ----
+let aTx=0,aRx=0;
+let aCtx=null, aProc=null, aStop=false;
+let aNextT=0; // playback scheduling
 
+// Sender: capture microphone → Int16 PCM → WS
 function startAudio(){
-  if(aRec)return;
-  // Wait for stream to be ready
+  if(aProc)return;
   if(!lstream||!lstream.getAudioTracks||!lstream.getAudioTracks().length){
     setTimeout(startAudio,500);return;
   }
-  if(typeof MediaRecorder==='undefined')return;
-  const codecs=['audio/webm;codecs=opus','audio/mp4;codecs=mp4a.40.2','audio/webm','audio/mp4'];
-  let ac='';
-  for(const c of codecs){try{if(MediaRecorder.isTypeSupported(c)){ac=c;break}}catch(e){}}
-  if(!ac){log('no audio codec');return}
-  // Create separate audio-only stream (some browsers require it)
-  const aStream=new MediaStream([lstream.getAudioTracks()[0]]);
   try{
-    aRec=new MediaRecorder(aStream,{mimeType:ac});
-    aRec.ondataavailable=e=>{
-      if(!e.data||!e.data.size)return;
-      e.data.arrayBuffer().then(buf=>{
-        const p=new Uint8Array(buf.byteLength+1);p[0]=1;
-        p.set(new Uint8Array(buf),1);
-        ws.send(p.buffer);tu(p.byteLength);
-        if(++aTx===1)log('audio 1st sent');
-      });
+    aCtx=new AudioContext();
+    if(aCtx.state==='suspended') aCtx.resume();
+    const src=aCtx.createMediaStreamSource(lstream);
+    aProc=aCtx.createScriptProcessor(2048,1,1); // 2048 samples mono
+    aProc.onaudioprocess=e=>{
+      if(aStop||!ws||ws.readyState!==WebSocket.OPEN)return;
+      const input=e.inputBuffer.getChannelData(0);
+      const pcm=new Int16Array(input.length);
+      for(let i=0;i<input.length;i++) pcm[i]=Math.max(-32768,Math.min(32767,input[i]*32768));
+      const c=new Uint8Array(1+pcm.buffer.byteLength);
+      c[0]=1;c.set(new Uint8Array(pcm.buffer),1);
+      ws.send(c.buffer);tu(c.byteLength);
+      aTx++;
     };
-    aRec.start(100);
-    log('audio OK: '+ac);
-  }catch(e){err('音频录制失败: '+e.message)}
+    src.connect(aProc);
+    // DON'T connect to destination (avoids mic feedback)
+    log('audio PCM started @'+aCtx.sampleRate+'Hz');
+  }catch(e){err('音频启动失败: '+e.message)}
+}
+
+function stopAudio(){
+  aStop=true;
+  if(aProc){aProc.disconnect();aProc=null}
+  if(aCtx){aCtx.close();aCtx=null}
+  aNextT=0;
+}
+
+// Receiver: Int16 PCM → AudioContext playback
+function handleAudio(data){
+  aRx++;
+  try{
+    if(!aCtx||aCtx.state==='closed'){
+      aCtx=new AudioContext();
+      aNextT=0;
+      // Resume if suspended (autoplay policy)
+      if(aCtx.state==='suspended') aCtx.resume();
+    }
+    const pcm=new Int16Array(data);
+    const sr=aCtx.sampleRate;
+    const buf=aCtx.createBuffer(1,pcm.length,sr);
+    const ch=buf.getChannelData(0);
+    for(let i=0;i<pcm.length;i++) ch[i]=pcm[i]/32768;
+    const node=aCtx.createBufferSource();
+    node.buffer=buf;
+    node.connect(aCtx.destination);
+    const now=aCtx.currentTime;
+    if(aNextT<now+0.05) aNextT=now+0.05; // 50ms lookahead
+    node.start(aNextT);
+    aNextT+=pcm.length/sr;
+  }catch(e){log('aErr:'+e.message)}
 }
 
 function updateDebug(){
   const info=document.getElementById('aDbg');
   if(!info)return;
-  info.textContent='🎤Tx:'+aTx+' Rx:'+aRx+' Buf:'+aBuf.length;
-}
-
-function stopAudio(){
-  if(aRec){aRec.stop();aRec=null}
-}
-
-// ---- Receive: audio via blob URL with seeking ----
-let aBuf=[], aEl=null, aTimer=null, aPlayed=false;
-
-function handleAudio(data){
-  aRx++;updateDebug();
-  aBuf.push(data);
-  if(!aEl){
-    aEl=document.createElement('audio');
-    aEl.autoplay=true;aEl.volume=1;
-    document.body.appendChild(aEl);
-  }
-  if(!aTimer) aTimer=setInterval(refreshAudio,2500);
-  if(!aPlayed){aPlayed=true;refreshAudio()}
-}
-
-function refreshAudio(){
-  if(!aBuf.length||!aEl)return;
-  // Keep last ~4s (40 chunks at 100ms) to bound memory
-  while(aBuf.length>60) aBuf.shift();
-  const blob=new Blob(aBuf,{type:'audio/webm'});
-  const url=URL.createObjectURL(blob);
-  const wasPlaying=!aEl.paused;
-  aEl.src=url;
-  aEl.play().catch(()=>{});
-  // Seek forward to skip already-played content
-  aEl.onloadedmetadata=()=>{
-    const skipTo=Math.max(0,aEl.duration-2); // leave last 2s
-    if(skipTo>0.5) aEl.currentTime=skipTo;
-  };
-  setTimeout(()=>URL.revokeObjectURL(url),3000);
+  info.textContent='🎤Tx:'+aTx+' Rx:'+aRx;
 }
 
 function showFrame(data){
@@ -206,8 +202,6 @@ function connect(){
         case 'peer-left': case 'hangup':
           havePeer=false;stopCap();stopAudio();
           RI.style.display='none';PH.style.display='block';PH.textContent='等待对方加入...';
-          aBuf=[];aPlayed=false;if(aTimer){clearInterval(aTimer);aTimer=null}
-          if(aEl){aEl.remove();aEl=null}
           $('netStats').textContent='⬆ -- ⬇ -- KB/s';
           if(m.type==='hangup')PH.textContent='对方已挂断';
           break;
