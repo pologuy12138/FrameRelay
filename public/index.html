@@ -120,8 +120,12 @@ function startAudio(){
       ws.send(c.buffer);tu(c.byteLength);
       aTx++;
     };
+    // Connect through mute gain to keep audio graph alive (required for callback)
+    const mute=aCtx.createGain();
+    mute.gain.value=0; // muted, no feedback
     src.connect(aProc);
-    // DON'T connect to destination (avoids mic feedback)
+    aProc.connect(mute);
+    mute.connect(aCtx.destination);
     log('audio PCM started @'+aCtx.sampleRate+'Hz');
   }catch(e){err('音频启动失败: '+e.message)}
 }
