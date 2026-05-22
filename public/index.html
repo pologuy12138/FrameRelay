@@ -59,7 +59,6 @@ let bar=(t,txt)=>{$('bar').className=t;$('bar').textContent=txt};
 let err=m=>{$('err').style.display='block';$('err').textContent='❌ '+m};
 
 let ws, lstream, havePeer=false, capInterval=null, aRec=null;
-let aMs=null, aSb=null, aQ=[];
 let upB=0, downB=0, lastUp=0, lastDown=0, si=null;
 function tu(n){upB+=n} function td(n){downB+=n}
 function ss(){if(si)return;si=setInterval(()=>{$('netStats').textContent=`⬆ ${((upB-lastUp)/1024).toFixed(1)} ⬇ ${((downB-lastDown)/1024).toFixed(1)} KB/s`;lastUp=upB;lastDown=downB;updateDebug()},1000)}
@@ -100,13 +99,19 @@ let aTx=0,aRx=0,aInit=0; // debug counters
 
 function startAudio(){
   if(aRec)return;
-  if(typeof MediaRecorder==='undefined'){bar('err','不支持的浏览器');return}
+  // Wait for stream to be ready
+  if(!lstream||!lstream.getAudioTracks||!lstream.getAudioTracks().length){
+    setTimeout(startAudio,500);return;
+  }
+  if(typeof MediaRecorder==='undefined')return;
   const codecs=['audio/webm;codecs=opus','audio/mp4;codecs=mp4a.40.2','audio/webm','audio/mp4'];
   let ac='';
-  for(const c of codecs){try{if(MediaRecorder.isTypeSupported(c)){ac=c;break}log('skip '+c)}catch(e){}}
-  if(!ac){err('未找到音频编码');return}
+  for(const c of codecs){try{if(MediaRecorder.isTypeSupported(c)){ac=c;break}}catch(e){}}
+  if(!ac){log('no audio codec');return}
+  // Create separate audio-only stream (some browsers require it)
+  const aStream=new MediaStream([lstream.getAudioTracks()[0]]);
   try{
-    aRec=new MediaRecorder(lstream,{mimeType:ac});
+    aRec=new MediaRecorder(aStream,{mimeType:ac});
     aRec.ondataavailable=e=>{
       if(!e.data||!e.data.size)return;
       e.data.arrayBuffer().then(buf=>{
@@ -117,65 +122,42 @@ function startAudio(){
       });
     };
     aRec.start(100);
-    log('audio start OK: '+ac);
+    log('audio OK: '+ac);
   }catch(e){err('音频录制失败: '+e.message)}
 }
 
 function updateDebug(){
   const info=document.getElementById('aDbg');
   if(!info)return;
-  info.textContent='🎤Tx:'+aTx+' Rx:'+aRx+' Plyr:'+aInit;
+  info.textContent='🎤Tx:'+aTx+' Rx:'+aRx+' Buf:'+aBuf.length;
 }
 
 function stopAudio(){
   if(aRec){aRec.stop();aRec=null}
 }
 
-// ---- Receive ----
+// ---- Receive: audio via blob URL (no MediaSource) ----
+let aBuf=[], aEl=null, aTimer=null, aPlayed=false;
+
 function handleAudio(data){
   aRx++;updateDebug();
-  if(!aMs){
-    // First audio chunk - init player
-    const codecs=['audio/webm;codecs=opus','audio/mp4','audio/webm','audio/mp4;codecs=mp4a.40.2'];
-    for(let i=0;i<codecs.length;i++){
-      try{
-        aMs=new MediaSource();
-        const ra=document.createElement('audio');
-        ra.autoplay=true;ra.src=URL.createObjectURL(aMs);
-        ra.play().catch(()=>{});
-        document.body.appendChild(ra);
-        aInit++;updateDebug();
-        aMs.onsourceopen=()=>{
-          try{
-            aSb=aMs.addSourceBuffer(codecs[i]);
-            aSb.mode='segments';
-            aSb.onupdateend=()=>{drainA()};
-            drainA();
-          }catch(e){
-            log('sb fail '+codecs[i]);
-            // Try next codec
-            if(i+1<codecs.length){
-              aMs=null;aSb=null;handleAudio(data);
-            }
-          }
-        };
-        return; // Successfully init
-      }catch(e){log('ms fail '+codecs[i])}
-    }
-    err('音频解码失败');
-    return;
+  aBuf.push(data);
+  if(!aEl){
+    aEl=document.createElement('audio');
+    aEl.autoplay=true;
+    document.body.appendChild(aEl);
   }
-  if(aSb&&!aSb.updating){try{aSb.appendBuffer(data)}catch(e){aQ.push(data)}}
-  else aQ.push(data);
+  if(!aTimer) aTimer=setInterval(refreshAudio,2000);
+  if(!aPlayed){aPlayed=true;refreshAudio()}
 }
 
-function drainA(){
-  while(aQ.length&&aSb&&!aSb.updating){
-    try{aSb.appendBuffer(aQ.shift())}catch(e){aQ=[];break}
-  }
-  if(aSb&&!aSb.updating&&aSb.buffered.length){
-    try{const e=aSb.buffered.end(aSb.buffered.length-1);if(e>30)aSb.remove(0,e-30)}catch(e2){}
-  }
+function refreshAudio(){
+  if(!aBuf.length||!aEl)return;
+  const blob=new Blob(aBuf,{type:'audio/webm'});
+  const url=URL.createObjectURL(blob);
+  aEl.src=url;
+  aEl.play().catch(()=>{});
+  setTimeout(()=>URL.revokeObjectURL(url),3000);
 }
 
 function showFrame(data){
@@ -216,8 +198,8 @@ function connect(){
         case 'peer-left': case 'hangup':
           havePeer=false;stopCap();stopAudio();
           RI.style.display='none';PH.style.display='block';PH.textContent='等待对方加入...';
-          if(aMs){try{aMs.endOfStream()}catch(e){}aMs=null}
-          aSb=null;aQ=[];document.querySelectorAll('audio').forEach(a=>a.remove());
+          aBuf=[];aPlayed=false;if(aTimer){clearInterval(aTimer);aTimer=null}
+          if(aEl){aEl.remove();aEl=null}
           $('netStats').textContent='⬆ -- ⬇ -- KB/s';
           if(m.type==='hangup')PH.textContent='对方已挂断';
           break;
