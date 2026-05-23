@@ -127,13 +127,9 @@ const MAX_PEERS = 2;  // 改为 4 则允许 4 人同时在线
 编辑 `public/index.html` 中的常量：
 
 ```javascript
-const VIDEO_WIDTH = 1920;
-const VIDEO_HEIGHT = 1080;
-const FPS = 24;          // 帧率（帧/秒），调低可减少带宽
-const JPEG_QUALITY = 0.7; // JPEG 质量（0-1），调低可减少带宽
+const FPS = 10;          // 帧率（帧/秒），调低可减少带宽
+// CV.toBlob(..., 'image/jpeg', 0.4)  // 0.4 = JPEG 质量（0-1），调低可减少带宽
 ```
-
-当前视频目标是 `1920x1080@24fps`。FrameRelay 的视频是 Canvas 截图后用 JPEG 通过 WebSocket 中继，不是 WebRTC 视频编码；因此 1080p24 会明显增加上传、下载和 VPS 中转流量。如果画面卡顿，可以优先降低 `FPS` 或 `JPEG_QUALITY`。
 
 ### 音频 TURN 配置
 

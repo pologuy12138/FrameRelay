@@ -54,10 +54,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <audio id="remoteAudio" autoplay playsinline style="display:none"></audio>
 <script>
 const $=id=>document.getElementById(id), LV=$('localVideo'), RI=$('remoteImg'), PH=$('ph'), CV=$('capCanvas'), RA=$('remoteAudio');
-const VIDEO_WIDTH=1920;
-const VIDEO_HEIGHT=1080;
-const FPS=24;
-const JPEG_QUALITY=0.7;
+const FPS=10;
 let log=m=>console.log('FR:',m);
 let bar=(t,txt)=>{$('bar').className=t;$('bar').textContent=txt};
 let err=m=>{$('err').style.display='block';$('err').textContent='❌ '+m};
@@ -84,14 +81,7 @@ const ICE_CONFIG = {
 async function startMedia(){
   try{
     lstream = await Promise.race([
-      navigator.mediaDevices.getUserMedia({
-        video:{
-          width:{ideal:VIDEO_WIDTH},
-          height:{ideal:VIDEO_HEIGHT},
-          frameRate:{ideal:FPS,max:FPS}
-        },
-        audio:true
-      }),
+      navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480}},audio:true}),
       new Promise((_,r)=>setTimeout(()=>r('timeout'),7000))
     ]);
   }catch(e){err('摄像头/麦克风不可用');return false}
@@ -104,13 +94,13 @@ function startCap(){
   stopCap();
   const go=()=>{
     if(LV.readyState<2||!LV.videoWidth){setTimeout(go,200);return}
-    const s=Math.min(VIDEO_WIDTH/LV.videoWidth,VIDEO_HEIGHT/LV.videoHeight,1);
+    const s=Math.min(640/LV.videoWidth,480/LV.videoHeight,1);
     CV.width=Math.round(LV.videoWidth*s); CV.height=Math.round(LV.videoHeight*s);
     const ctx=CV.getContext('2d');
     capInterval=setInterval(()=>{
       if(!ws||ws.readyState!==WebSocket.OPEN)return;
       ctx.drawImage(LV,0,0,CV.width,CV.height);
-      CV.toBlob(b=>{if(b&&b.size>100){ws.send(b);tu(b.size)}},'image/jpeg',JPEG_QUALITY);
+      CV.toBlob(b=>{if(b&&b.size>100){ws.send(b);tu(b.size)}},'image/jpeg',0.4);
     },1000/FPS);
   };
   go();
@@ -252,8 +242,7 @@ function updateDebug(){
   if(!info)return;
   info.textContent='🎤 audio:'+(aConnected?'✅':'⏳')+
     ' | PC:'+(pc?pc.connectionState:'null')+
-    ' | ICE:'+(pc?pc.iceConnectionState:'-')+
-    (CV.width&&CV.height?' | V:'+CV.width+'x'+CV.height+'@'+FPS:'');
+    ' | ICE:'+(pc?pc.iceConnectionState:'-');
 }
 
 // ---- Video frame receive (unchanged) ----
